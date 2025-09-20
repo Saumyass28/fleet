@@ -1,0 +1,12 @@
+autogen-agentchat
+tavily-python
+fastapi
+uvicorn
+sqlalchemy[asyncio]
+asyncpg
+aiosqlite
+autogen-ext[openai]
+httpx
+aiofiles
+python-dateutil
+regex

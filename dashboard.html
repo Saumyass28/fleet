@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Industry Monitoring Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .result-card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 16px;
+            padding: 20px;
+        }
+        .metric-tag {
+            background: #e5e7eb;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin: 2px;
+            display: inline-block;
+        }
+        .news-item {
+            border-left: 3px solid #3b82f6;
+            padding-left: 12px;
+            margin: 8px 0;
+        }
+        .loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <h1 class="text-3xl font-bold mb-6 text-gray-800">Industry Monitoring Dashboard</h1>
+        
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <div class="flex flex-col sm:flex-row gap-4">
+                <input id="query" type="text" class="flex-1 border border-gray-300 p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter company name or industry to search...">
+                <button onclick="fetchResults()" class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg transition duration-200">
+                    <span id="search-text">Search</span>
+                    <span id="loading-text" class="hidden">Searching...</span>
+                </button>
+            </div>
+        </div>
+        
+        <div id="results" class="space-y-4"></div>
+    </div>
+    
+    <script>
+        async function fetchResults() {
+            const query = document.getElementById('query').value.trim();
+            if (!query) {
+                alert('Please enter a search query');
+                return;
+            }
+            
+            // Show loading state
+            const searchButton = document.querySelector('button');
+            const searchText = document.getElementById('search-text');
+            const loadingText = document.getElementById('loading-text');
+            const resultsDiv = document.getElementById('results');
+            
+            searchButton.classList.add('loading');
+            searchText.classList.add('hidden');
+            loadingText.classList.remove('hidden');
+            resultsDiv.innerHTML = '<div class="text-center text-gray-500">Searching and formatting results...</div>';
+            
+            try {
+                const response = await fetch(`/query/${encodeURIComponent(query)}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    resultsDiv.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">${data.error}</div>`;
+                } else {
+                    displayResults(data.results);
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">Error: ${error.message}</div>`;
+            } finally {
+                // Reset loading state
+                searchButton.classList.remove('loading');
+                searchText.classList.remove('hidden');
+                loadingText.classList.add('hidden');
+            }
+        }
+        
+        function displayResults(results) {
+            const resultsDiv = document.getElementById('results');
+            
+            if (!results || results.length === 0) {
+                resultsDiv.innerHTML = '<div class="text-center text-gray-500 py-8">No results found. Try a different search term.</div>';
+                return;
+            }
+            
+            let html = '';
+            
+            results.forEach(result => {
+                if (typeof result === 'string') {
+                    html += `<div class="result-card"><p class="text-gray-600">${result}</p></div>`;
+                    return;
+                }
+                
+                const data = result.data || {};
+                html += `
+                    <div class="result-card">
+                        <div class="flex justify-between items-start mb-4">
+                            <h2 class="text-xl font-semibold text-gray-800">${result.name || 'Unknown Company'}</h2>
+                            <span class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">${result.industry || 'Unknown Industry'}</span>
+                        </div>
+                        
+                        ${formatCompanyData(data)}
+                    </div>
+                `;
+            });
+            
+            resultsDiv.innerHTML = html;
+        }
+        
+        function formatCompanyData(data) {
+            let html = '';
+            
+            // Company Info
+            if (data.company_info) {
+                html += `
+                    <div class="mb-4">
+                        <h3 class="text-lg font-medium text-gray-700 mb-2">Company Information</h3>
+                        <p class="text-gray-600">${data.company_info.description || 'No description available'}</p>
+                    </div>
+                `;
+            }
+            
+            // Key Metrics
+            if (data.key_metrics && Object.keys(data.key_metrics).length > 0) {
+                html += `
+                    <div class="mb-4">
+                        <h3 class="text-lg font-medium text-gray-700 mb-2">Key Metrics</h3>
+                        <div class="flex flex-wrap gap-2">
+                `;
+                Object.entries(data.key_metrics).forEach(([key, value]) => {
+                    html += `<span class="metric-tag"><strong>${formatKey(key)}:</strong> ${value}</span>`;
+                });
+                html += `</div></div>`;
+            }
+            
+            // Financial Highlights
+            if (data.financial_highlights && Object.keys(data.financial_highlights).length > 0) {
+                html += `
+                    <div class="mb-4">
+                        <h3 class="text-lg font-medium text-gray-700 mb-2">Financial Highlights</h3>
+                        <div class="flex flex-wrap gap-2">
+                `;
+                Object.entries(data.financial_highlights).forEach(([key, value]) => {
+                    html += `<span class="metric-tag bg-green-100"><strong>${formatKey(key)}:</strong> ${value}</span>`;
+                });
+                html += `</div></div>`;
+            }
+            
+            // Recent News
+            if (data.recent_news && data.recent_news.length > 0) {
+                html += `
+                    <div class="mb-4">
+                        <h3 class="text-lg font-medium text-gray-700 mb-2">Recent News</h3>
+                        <div class="space-y-2">
+                `;
+                data.recent_news.slice(0, 3).forEach(news => {
+                    html += `
+                        <div class="news-item">
+                            <h4 class="font-medium text-gray-800">${news.headline || news.title || 'News Item'}</h4>
+                            <p class="text-sm text-gray-600">${news.summary || news.content || ''}</p>
+                            ${news.url ? `<a href="${news.url}" target="_blank" class="text-blue-500 text-sm hover:underline">Read more →</a>` : ''}
+                        </div>
+                    `;
+                });
+                html += `</div></div>`;
+            }
+            
+            // Summary
+            if (data.summary) {
+                html += `
+                    <div class="mb-4">
+                        <h3 class="text-lg font-medium text-gray-700 mb-2">Summary</h3>
+                        <p class="text-gray-600 bg-gray-50 p-3 rounded">${data.summary}</p>
+                    </div>
+                `;
+            }
+            
+            // Data Quality
+            if (data.data_quality) {
+                const completeness = Math.round((data.data_quality.completeness || 0) * 100);
+                html += `
+                    <div class="text-sm text-gray-500 border-t pt-2 mt-4">
+                        <span>Data Quality: ${completeness}%</span>
+                        ${data.data_quality.last_updated ? ` | Last Updated: ${new Date(data.data_quality.last_updated).toLocaleDateString()}` : ''}
+                        ${data.data_quality.sources ? ` | Sources: ${data.data_quality.sources.length}` : ''}
+                    </div>
+                `;
+            }
+            
+            return html || '<p class="text-gray-500">No additional data available</p>';
+        }
+        
+        function formatKey(key) {
+            return key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        }
+        
+        // Allow Enter key to trigger search
+        document.getElementById('query').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                fetchResults();
+            }
+        });
+    </script>
+</body>
+</html>
