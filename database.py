@@ -1,117 +1,139 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import Column, Integer, String, JSON, DateTime, select
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.sql import text
+from sqlalchemy.orm import declarative_base
 from datetime import datetime
 from config import Config
-import asyncio
-import os
 
 Base = declarative_base()
 
-# Global engine and session maker
+# Globals
 _engine = None
 _async_session = None
 
+
 class Company(Base):
     __tablename__ = "companies"
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255), nullable=False, index=True)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False, index=True, unique=True)
     industry = Column(String(100), index=True)
     data = Column(JSON)
-    last_updated = Column(DateTime)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- Engine / Session Setup ----------
 
 def get_engine():
+    """Create global async engine if not already created."""
     global _engine
     if _engine is None:
-        # Use SQLite for development (easy setup)
-        print("Using SQLite database for development")
-        db_path = os.path.join(os.path.dirname(__file__), "industry_monitoring.db")
+        config = Config()
         _engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path}",
-            echo=False
+            f"postgresql+asyncpg://{config.DB_USER}:{config.DB_PASSWORD}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}",
+            echo=False,
+            pool_size=10,
+            max_overflow=20,
+            future=True,
         )
-        print(f"SQLite database path: {db_path}")
-    
     return _engine
 
-def get_async_session_maker():
+
+def get_session_maker():
+    """Return async session maker bound to engine."""
     global _async_session
     if _async_session is None:
         engine = get_engine()
-        _async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        _async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     return _async_session
 
-async def get_db_session():
-    session_maker = get_async_session_maker()
-    return session_maker()
+
+async def get_db_session() -> AsyncSession:
+    """Get a new async session."""
+    return get_session_maker()()
+
+
+# ---------- DB Lifecycle ----------
 
 async def init_db():
+    """Create all tables if they don’t exist."""
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # SQLite doesn't need explicit index creation if defined in model
-        print("Database tables created successfully")
-    print("Database initialized successfully")
+    print("✅ Database initialized and tables ready.")
 
-async def store_data(company_name: str, industry: str, data: dict) -> dict:
-    session = await get_db_session()
-    try:
-        # Check if company exists
-        stmt = select(Company).filter_by(name=company_name)
-        result = await session.execute(stmt)
-        company = result.scalar_one_or_none()
-        
-        if company:
-            company.industry = industry
-            company.data = data
-            company.last_updated = datetime.now()
-            print(f"Updated existing company: {company_name}")
-        else:
-            company = Company(
-                name=company_name,
-                industry=industry,
-                data=data,
-                last_updated=datetime.now()
-            )
-            session.add(company)
-            print(f"Added new company: {company_name}")
-        
-        await session.commit()
-        return {"status": "success", "company": company_name}
-    except Exception as e:
-        await session.rollback()
-        print(f"Database error in store_data: {e}")
-        return {"status": "error", "message": str(e)}
-    finally:
-        await session.close()
-
-async def query_db(query: str) -> dict:
-    session = await get_db_session()
-    try:
-        stmt = select(Company).filter(
-            (Company.name.ilike(f"%{query}%")) | (Company.industry.ilike(f"%{query}%"))
-        )
-        result = await session.execute(stmt)
-        companies = result.scalars().all()
-        
-        if companies:
-            #print(f"Found {len(companies)} companies matching '{query}'")
-            return [{"name": c.name, "industry": c.industry, "data": c.data} for c in companies]
-        
-        #print(f"No companies found matching '{query}'")
-        return "No relevant data found."
-    except Exception as e:
-        print(f"Database query error: {e}")
-        return f"Database error: {str(e)}"
-    finally:
-        await session.close()
 
 async def close_db():
-    """Close database connections"""
+    """Dispose engine + reset session maker."""
     global _engine, _async_session
     if _engine:
         await _engine.dispose()
         _engine = None
         _async_session = None
-        print("Database connections closed")
+        print("🛑 Database connections closed.")
+
+
+# ---------- CRUD Operations ----------
+
+async def store_data(company_name: str, industry: str, data: dict) -> dict:
+    """Insert or update company record asynchronously, auto-creating table if needed."""
+    session_maker = get_session_maker()
+
+    async with session_maker() as session:
+        try:
+            # Ensure table exists
+            engine = get_engine()
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            # Check if company exists
+            stmt = select(Company).filter_by(name=company_name)
+            result = await session.execute(stmt)
+            company = result.scalar_one_or_none()
+
+            if company:
+                company.industry = industry
+                company.data = data
+                company.last_updated = datetime.utcnow()
+                action = "updated"
+            else:
+                company = Company(
+                    name=company_name,
+                    industry=industry,
+                    data=data,
+                    last_updated=datetime.utcnow(),
+                )
+                session.add(company)
+                action = "inserted"
+
+            await session.commit()
+            return {"status": "success", "action": action, "company": company_name}
+
+        except Exception as e:
+            await session.rollback()
+            return {"status": "error", "message": str(e)}
+
+
+async def query_db(query: str):
+    """Search companies by name or industry (case-insensitive)."""
+    session_maker = get_session_maker()
+
+    async with session_maker() as session:
+        try:
+            stmt = select(Company).filter(
+                (Company.name.ilike(f"%{query}%")) | (Company.industry.ilike(f"%{query}%"))
+            )
+            result = await session.execute(stmt)
+            companies = result.scalars().all()
+
+            return [
+                {
+                    "name": c.name,
+                    "industry": c.industry,
+                    "data": c.data,
+                    "last_updated": c.last_updated.isoformat() if c.last_updated else None,
+                }
+                for c in companies
+            ]
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
